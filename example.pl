@@ -4,7 +4,7 @@
 use strict;
 
 # change this to location of ldap2pts.pm
-use lib '/afs/bx.psu.edu/service/Ldap2Pts/';
+use lib '/afs/bx.psu.edu/service/ldap2pts/';
 use ldap2pts;
 
 # connect to ldap
