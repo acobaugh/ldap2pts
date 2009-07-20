@@ -1,4 +1,4 @@
-
+# $Id$
 package ldap2pts;
 
 use strict;
