@@ -11,11 +11,20 @@ use ldap2pts;
 ldap_connect("ldap://ldap.bx.psu.edu", "dc=bx,dc=psu,dc=edu");
 
 # this sets options to be passed always to pts, such as -localauth
-pts_set_options("");
+#set_pts_options("");
 
 # this explicitly sets pts executable path, rather than letting the 
 # moduel search for it
-#pts_set_executable(""\t\" pts");
+#set_pts_executable("/usr/bin/pts");
+
+# print any changes that are made
+# doesn't output anything if we don't have
+# to make any changes
+set_verbose(1);
+
+# this prints out almost everything that we're doing
+# only use this for debugging
+set_really_verbose(0);
 
 # this tells the module to print the commands it will run 
 # and display the output of each command
