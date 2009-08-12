@@ -12,8 +12,8 @@ our @EXPORT = (
 	'set_execute_verbose',
 	'set_verbose',
 	'set_really_verbose',
-	'pts_set_options',
-	'pts_set_executable',
+	'set_pts_options',
+	'set_pts_executable',
 	'ldap_connect',
 	'bulk_sync_users',
 	'bulk_sync_groups',
@@ -467,15 +467,21 @@ sub translate_username {
 
 sub execute {
 	my ($command) = @_;
-	
+	my (@output, $exit);
+
 	if ($execute_verbose == 1)	{
 		printf "Executing: %s\n", $command;
-		my @output = `$command`;
+		@output = `$command`;
+		$exit = $?;
 		foreach (@output) {
-			printf "\t%s\n", $_;
+			printf "\t%s", $_;
 		}
 	} else {
-		my @output = `$command`;
+		@output = `$command`;
+		$exit = $?
+	}
+	if ($exit != 0) {
+		printf "ERROR: Command \"%s\" returned %s\n", $command, $exit;
 	}
 	return @output;
 }
@@ -486,9 +492,7 @@ sub execute {
 ##
 sub bulk_sync_users {
 	if ($_[0] eq 'pretend') {
-		if ($really_verbose == 1) {
-			print "PRETENDING\n";
-		}
+		print "PRETENDING\n";
 		$pretend = 1;
 	}
 
@@ -545,9 +549,7 @@ sub bulk_sync_users {
 ##
 sub bulk_sync_groups {
 	if ($_[0] eq 'pretend') {
-		if ($verbose == 1) {
-			print "PRETENDING\n\n";
-		}
+		print "PRETENDING\n\n";
 		$pretend = 1;
 	}
 
