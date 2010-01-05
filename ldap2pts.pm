@@ -456,10 +456,10 @@ sub ldap_group_expand {
 				attrs => [ 'uid' ]
 			);
 		
-			$mesg->code && die $mesg->error;
+			#$mesg->code && die $mesg->error;
 
 			if ($mesg->count() != 0) {
-				push @members, $mesg->entry(0)->get_value('uid');
+				push @members, translate_username($mesg->entry(0)->get_value('uid'));
 			} else {
 				if ($really_verbose == 1) {
 					print "Did not find uid for $search, not adding to group\n";
