@@ -344,13 +344,13 @@ sub ldap_gidnumber {
 	my $mesg;
 	$mesg = $ldap->search(
 		base => "$ldap_base",
-		filter => "(&(objectclass=posixGroup)(cn=$search))",
-		attrs => [ 'gidNumber' ]
+		filter => "(&(objectclass=bxAFSGroup)(cn=$search))",
+		attrs => [ 'bxAFSGroupId' ]
 	);
 	$mesg->code && die $mesg->error;
 
 	if ($mesg->count() != 0) {
-		return $mesg->entry(0)->get_value('gidnumber');
+		return $mesg->entry(0)->get_value('bxAFSGroupId');
 	} else {
 		return 0;
 	}
@@ -402,8 +402,8 @@ sub ldap_get_groups {
 
 	$mesg = $ldap->search(
 		base => "$ldap_base",
-		filter => "(objectClass=posixGroup)",
-		attrs => [ 'gidNumber', 'cn' ]
+		filter => "(objectClass=bxAFSGroup)",
+		attrs => [ 'bxAFSGroupId', 'cn' ]
 	);
 	
 	$mesg->code && die $mesg->error;
@@ -411,7 +411,7 @@ sub ldap_get_groups {
 	if ($mesg->count() != 0) {
 		for (my $i = 0; $i < $mesg->count(); $i++) {
 			$cn = $mesg->entry($i)->get_value('cn');
-			$gidnumber = $mesg->entry($i)->get_value('gidNumber');
+			$gidnumber = $mesg->entry($i)->get_value('bxAFSGroupId');
 		
 			$groups{$gidnumber} = $cn;
 		}
@@ -433,14 +433,40 @@ sub ldap_group_expand {
 
 	$mesg = $ldap->search(
 		base => "$ldap_base",
-		filter => "(&(objectClass=posixGroup)(|(cn=$search)(gidNumber=$search)))",
-		attrs => [ 'memberUid' ]
+		filter => "(&(objectClass=bxAFSGroup)(|(cn=$search)(bxAFSGroupId=$search)))",
+		attrs => [ 'member' ]
 	);
 	
 	$mesg->code && die $mesg->error;
 
+## Use this block if using memberUid	
+#	if ($mesg->count() != 0) {
+#		return $mesg->entry(0)->get_value('member');
+#	} else {
+#		return 0;
+#	}
+
+## Use this block if using member, where member contains a DN
+	my @members;
 	if ($mesg->count() != 0) {
-		return $mesg->entry(0)->get_value('memberUid');
+		foreach $search ($mesg->entry(0)->get_value('member')) {
+			$mesg = $ldap->search(
+				base => "$search",
+				filter => "(objectClass=*)",
+				attrs => [ 'uid' ]
+			);
+		
+			$mesg->code && die $mesg->error;
+
+			if ($mesg->count() != 0) {
+				push @members, $mesg->entry(0)->get_value('uid');
+			} else {
+				if ($really_verbose == 1) {
+					print "Did not find uid for $search, not adding to group\n";
+				}
+			}
+		}
+		return @members;
 	} else {
 		return 0;
 	}
