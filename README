@@ -1,0 +1,12 @@
+ldap2pts
+
+This is a simple Perl module designed to handle one-way 
+synchronization between LDAP and AFS's PTS database
+for users and groups.
+
+Requirements:
+- Perl 5
+- Net::LDAP
+- pts (tested with output format from 1.4.7, should work with others)
+
+More documentation to be added later.

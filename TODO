@@ -1,0 +1,2 @@
+- Make more configurable without editing ldap2pts.pm
+- Selectable group model; memberUid vs member
