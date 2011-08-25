@@ -604,18 +604,15 @@ sub bulk_sync_groups {
 
 			foreach (@pts_users_add) {
 				pts_adduser($pts_groups{$ldap_gidnumber}, $_);
-				print "\n";
 			}
 			foreach (@pts_users_remove) {
 				pts_removeuser($pts_groups{$ldap_gidnumber}, $_);
-				print "\n";
 			}
 		} else {
 			pts_creategroup($ldap_groups{$ldap_gidnumber}, $ldap_gidnumber);
 			foreach (ldap_group_expand($ldap_groups{$ldap_gidnumber})) {
 					pts_adduser($ldap_groups{$ldap_gidnumber}, $_);
 			}
-			print "\n";
 		}
 	}
 
