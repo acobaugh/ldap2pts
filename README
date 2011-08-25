@@ -1,6 +1,6 @@
 ldap2pts
 
-This is a simple Perl module designed to handle one-way 
+This is a simple Perl script designed to handle one-way 
 synchronization between LDAP and AFS's PTS database
 for users and groups.
 
