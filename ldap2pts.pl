@@ -16,8 +16,9 @@ GetOptions(\%opt,
 	'p|pretend'
 );
 
+my $conf;
 if (defined $opt{'config'} and $opt{'config'} ne '') {
-	my $conf = new Config::General (
+	$conf = new Config::General (
 		-AutoTrue => 1,
 		-MergeDuplicateOptions => 1,
 		-MergeDuplicateBlocks => 1,
@@ -32,8 +33,8 @@ if (defined $opt{'config'} and $opt{'config'} ne '') {
 my %c = $conf->getall;
 
 # verbose and pretend
-my $v = $opt{'verbose'}; 
-my $p = $opt{'pretend'};
+my $verbose = $opt{'verbose'}; 
+my $pretend = $opt{'pretend'};
 
 # pts user and group variables
 my (%pts_users, %pts_users_by_name, $pts_user_name, $pts_user_id, @pts_users_add, @pts_users_remove);
@@ -68,7 +69,7 @@ sub pts_group_expand {
 	if (($group * 1) eq $group) {
 		$group = "-$group";
 	}
-	if ($v >= 1) {
+	if ($verbose >= 1) {
 		printf "Expanding pts group %s\n", $group;
 	}
 	my @output = execute("$PTS membership $group 2>/dev/null $PTS_OPTIONS");
@@ -89,7 +90,7 @@ sub pts_group_expand {
 sub pts_group_id {
 	my ($group) = @_;
 	
-	if ($v >= 1) {
+	if ($verbose >= 1) {
 		printf "Obtaining group id for %s\n", $group;
 	}
 	my ($output) = execute("$PTS examine $group 2>/dev/null $PTS_OPTIONS");
@@ -107,7 +108,7 @@ sub pts_group_id {
 sub pts_user_id {
 	my ($user) = @_;
 	
-	if ($v >= 1) {
+	if ($verbose >= 1) {
 		printf "Obtaining pts user id for %s\n", $user;
 	}
 	my ($output) = execute("$PTS examine $user 2>/dev/null $PTS_OPTIONS");
@@ -123,7 +124,7 @@ sub pts_user_id {
 # accepts: nothing
 # returns: hash of users, keyed off id
 sub pts_get_users {
-	if ($v >= 1) {
+	if ($verbose >= 1) {
 		print "Obtaining list of all pts users\n";
 	}
 	my @output = execute("$PTS listentries 2>/dev/null $PTS_OPTIONS");
@@ -144,7 +145,7 @@ sub pts_get_users {
 # accepts: nothing
 # returns: hash of groups, keyed by |id|
 sub pts_get_groups {
-	if ($v >= 1) {
+	if ($verbose >= 1) {
 		print "Obtaining list of all pts groups\n";
 	}
 	my @output = `$PTS listentries -g 2>/dev/null $PTS_OPTIONS`;
@@ -167,7 +168,7 @@ sub pts_get_groups {
 sub pts_ignore {
 	my ($match) = @_;
 	if ($match =~ '^system:.+') {
-		if ($v >= 1) {
+		if ($verbose >= 1) {
 			printf "Ignoring PTS entry: %s\n", $match;
 		}
 		return 1;
