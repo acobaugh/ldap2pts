@@ -7,13 +7,17 @@ use Getopt::Long;
 use Net::LDAP;
 use Config::General;
 
+my $verbose = 0;
+my $pretend = 0;
+my $debug = 0;
 my %opt = ();
 Getopt::Long::Configure('bundling');
 GetOptions(\%opt,
 	'h|help',
-	'verbose=i',
 	'config=s',
-	'p|pretend'
+	'v|verbose' => \$verbose,
+	'd|debug' => \$debug,
+	'p|pretend' => \$pretend
 );
 
 my $conf;
@@ -22,7 +26,7 @@ if (defined $opt{'config'} and $opt{'config'} ne '') {
 		-AutoTrue => 1,
 		-MergeDuplicateOptions => 1,
 		-MergeDuplicateBlocks => 1,
-		-ConfigFile => $opt{'opt'}
+		-ConfigFile => $opt{'config'}
 	);
 } else {
 	print "ERROR: Must specify --config <file>\n";
@@ -31,10 +35,6 @@ if (defined $opt{'config'} and $opt{'config'} ne '') {
 
 # read the config file
 my %c = $conf->getall;
-
-# verbose and pretend
-my $verbose = $opt{'verbose'}; 
-my $pretend = $opt{'pretend'};
 
 # pts user and group variables
 my (%pts_users, %pts_users_by_name, $pts_user_name, $pts_user_id, @pts_users_add, @pts_users_remove);
@@ -52,19 +52,23 @@ my ($PTS) = grep { -x $_ } qw(/usr/bin/pts /opt/local/bin/pts /opt/bx/bin/pts);
 $PTS ||= 'pts';
 
 # let the config file override the location of pts
-if (defined $c{'pts'}) {
-	my $PTS = $c{'pts'};
+if (defined $c{'pts'}{'pts_command'}) {
+	my $PTS = $c{'pts'}{'pts_command'};
 }
-my $PTS_OPTIONS = $c{'pts_options'};
+my $PTS_OPTIONS = $c{'pts'}{'pts_options'};
 
 # connect to ldap
-if ($verbose >= 1) {
+if ($verbose) {
 	printf "Connecting to LDAP server %s\n", $c{'ldap'}{'server'};
 }
 my $ldap = Net::LDAP->new($c{'ldap'}{'server'}) or die "$@";
 $ldap->bind;
 
+# sync
+bulk_sync_users();
+bulk_sync_groups();
 
+# unbind
 $ldap->unbind();
 
 ##
@@ -78,8 +82,8 @@ sub pts_group_expand {
 	if (($group * 1) eq $group) {
 		$group = "-$group";
 	}
-	if ($verbose >= 1) {
-		printf "Expanding pts group %s\n", $group;
+	if ($debug) {
+		printf "pts_group_expand(): expanding pts group %s\n", $group;
 	}
 	my @output = execute("$PTS membership $group 2>/dev/null $PTS_OPTIONS");
 	if ($? == 0) {
@@ -99,8 +103,8 @@ sub pts_group_expand {
 sub pts_group_id {
 	my ($group) = @_;
 	
-	if ($verbose >= 1) {
-		printf "Obtaining group id for %s\n", $group;
+	if ($debug) {
+		printf "pts_group_id(): obtaining group id for %s\n", $group;
 	}
 	my ($output) = execute("$PTS examine $group 2>/dev/null $PTS_OPTIONS");
 	
@@ -117,8 +121,8 @@ sub pts_group_id {
 sub pts_user_id {
 	my ($user) = @_;
 	
-	if ($verbose >= 1) {
-		printf "Obtaining pts user id for %s\n", $user;
+	if ($debug) {
+		printf "pts_user_id(): obtaining pts user id for %s\n", $user;
 	}
 	my ($output) = execute("$PTS examine $user 2>/dev/null $PTS_OPTIONS");
 
@@ -133,8 +137,8 @@ sub pts_user_id {
 # accepts: nothing
 # returns: hash of users, keyed off id
 sub pts_get_users {
-	if ($verbose >= 1) {
-		print "Obtaining list of all pts users\n";
+	if ($verbose) {
+		print "Getting list of all pts users\n";
 	}
 	my @output = execute("$PTS listentries 2>/dev/null $PTS_OPTIONS");
 	if ($? == 0) {
@@ -144,18 +148,22 @@ sub pts_get_users {
 			s/(.+?) +(.+?) .+//;
 			$users{$2} = $1;
 		}
+		
+		if ($debug) {
+			printf "pts_get_users(): found %n users\n", keys(%users);
+		}
+
 		return %users;
 	} else {
-		# this shouldn't happen
-		die "$PTS listentries failed";
+		die "$PTS returned $?. Perhaps you don't have permission?";
 	}
 }
 
 # accepts: nothing
 # returns: hash of groups, keyed by |id|
 sub pts_get_groups {
-	if ($verbose >= 1) {
-		print "Obtaining list of all pts groups\n";
+	if ($verbose) {
+		print "Getting list of all pts groups\n";
 	}
 	my @output = `$PTS listentries -g 2>/dev/null $PTS_OPTIONS`;
 	if ($? == 0) {
@@ -168,7 +176,7 @@ sub pts_get_groups {
 		return %groups;
 	} else {
 		# this shouldn't happen
-		die "$PTS listentries failed";
+		print "$PTS listentries returned 0 entries\n";
 	}
 }
 
@@ -190,12 +198,9 @@ sub pts_ignore {
 # returns: nothing
 sub pts_rename {
 	my ($old, $new) = @_;
-	if ($verbose == 1) {
-		printf "Renaming PTS entry from %s to %s\n", $old, $new;
-	}
-	if ($pretend != 1) {
-		execute("$PTS rename $old $new $PTS_OPTIONS");
-	}
+	printf "Renaming PTS entry from %s to %s\n", $old, $new;
+	
+	pexecute("$PTS rename $old $new $PTS_OPTIONS");
 }
 
 # accepts: user and group
@@ -203,14 +208,10 @@ sub pts_rename {
 sub pts_adduser {
 	my ($group, $user) = @_;
 	if (pts_user_id($user) > 0) {
-		if ($verbose >= 1) {
-			printf "Adding user %s to group %s\n", $user, $group;
-		}
-		if (!$pretend) {
-			execute("$PTS adduser -user $user -group $group $PTS_OPTIONS");
-		}
-	} elsif ($verbose >= 1) {
-		printf "User %s does not exist in PTS, so not adding to group %s", $user, $group;
+		printf "Adding user %s to group %s\n", $user, $group;
+		pexecute("$PTS adduser -user $user -group $group $PTS_OPTIONS");
+	} elsif ($verbose) {
+		printf "WARNING: User %s does not exist in PTS, so not adding to group %s", $user, $group;
 	}
 }
 
@@ -218,12 +219,9 @@ sub pts_adduser {
 # returns: nothing
 sub pts_removeuser {
 	my ($group, $user) = @_;
-	if ($verbose >= 1) {
-		printf "Removing user %s from group %s\n", $user, $group;
-	}
-	if (!$pretend) {
-		execute("$PTS removeuser -user $user -group $group $PTS_OPTIONS");
-	}
+	printf "Removing user %s from group %s\n", $user, $group;
+
+	pexecute("$PTS removeuser -user $user -group $group $PTS_OPTIONS");
 }
 
 # accepts: group and id 
@@ -233,36 +231,27 @@ sub pts_creategroup {
 	if ($id !~ s/^-.+//) {
 		$id = "-$id";
 	}
-	if ($verbose >= 1) {
-		printf "Creating PTS group named %s with id %s\n", $name, $id;
-	}
-	if (!$pretend) {
-		execute("$PTS creategroup -name $name -id $id $PTS_OPTIONS");
-	}
+	printf "Creating PTS group named %s with id %s\n", $name, $id;
+
+	pexecute("$PTS creategroup -name $name -id $id $PTS_OPTIONS");
 }
 
 # accepts: name OR id to delete
 # returns: nothing
 sub pts_delete {
 	my ($nameorid) = @_;
-	if ($verbose >= 1) {
-		printf "Deleting PTS entry with nameorid %s\n", $nameorid;
-	}
-	if (!$pretend) {
-		execute("$PTS delete -nameorid $nameorid");
-	}
+	printf "Deleting PTS entry with nameorid %s\n", $nameorid;
+	
+	pexecute("$PTS delete -nameorid $nameorid");
 }
 
 # accepts: name and id
 # returns: nothing
 sub pts_createuser {
 	my ($name, $id) = @_;
-	if ($verbose >= 1) {
-		printf "Creating PTS user named %s with id %s\n", $name, $id;
-	}
-	if (!$pretend) {
-		execute("$PTS createuser -name $name -id $id $PTS_OPTIONS");
-	}
+	printf "Creating PTS user named %s with id %s\n", $name, $id;
+
+	pexecute("$PTS createuser -name $name -id $id $PTS_OPTIONS");
 }
 
 ##
@@ -344,7 +333,7 @@ sub ldap_get_users {
 	my ($mesg, $uid, $uidnumber);
 	my %users;
 	
-	if ($verbose >= 1) {
+	if ($verbose) {
 		print "Getting list of all LDAP users\n";
 	}
 
@@ -363,6 +352,9 @@ sub ldap_get_users {
 		
 			$users{$uidnumber} = $uid;
 		}
+		if ($debug) {
+			printf "ldap_get_users(): found %n users\n", $mesg->count();
+		}
 		return %users;
 	} else {
 		return 0;
@@ -376,7 +368,7 @@ sub ldap_get_groups {
 	my ($mesg, $cn, $gidnumber);
 	my %groups;
 
-	if ($verbose >= 1) {
+	if ($verbose) {
 		print "Getting list of all LDAP groups\n";
 	}
 
@@ -395,6 +387,9 @@ sub ldap_get_groups {
 		
 			$groups{$gidnumber} = $cn;
 		}
+		if ($debug) {
+			printf "ldap_get_groups(): found %n groups\n", $mesg->count();
+		}
 		return %groups;
 	} else {
 		return 0;
@@ -404,16 +399,16 @@ sub ldap_get_groups {
 # accepts: cn or gidnumber
 # returns: array of members (memberUid) or 0
 sub ldap_group_expand {
-	my ($search) = @_;
+	my ($group) = @_;
 	my $mesg;
 	
-	if ($verbose >= 1) {
-		print "Expanding LDAP group %s\n", $search;
+	if ($debug) {
+		printf "ldap_group_expand(): expanding LDAP group %s\n", $group;
 	}
 
 	$mesg = $ldap->search(
 		base => $c{'ldap'}{'base'},
-		filter => "(&(objectClass=bxAFSGroup)(|(cn=$search)(bxAFSGroupId=$search)))",
+		filter => "(&(objectClass=bxAFSGroup)(|(cn=$group)(bxAFSGroupId=$group)))",
 		attrs => [ 'member' ]
 	);
 	
@@ -429,9 +424,9 @@ sub ldap_group_expand {
 ## Use this block if using member, where member contains a DN
 	my @members;
 	if ($mesg->count() != 0) {
-		foreach $search ($mesg->entry(0)->get_value('member')) {
+		foreach my $member ($mesg->entry(0)->get_value('member')) {
 			$mesg = $ldap->search(
-				base => "$search",
+				base => "$member",
 				filter => "(objectClass=*)",
 				attrs => [ 'uid' ]
 			);
@@ -439,11 +434,9 @@ sub ldap_group_expand {
 			#$mesg->code && die $mesg->error;
 
 			if ($mesg->count() != 0) {
-				push @members, translate_username($mesg->entry(0)->get_value('uid'));
+				push @members, pts_translate_username($mesg->entry(0)->get_value('uid'));
 			} else {
-				if ($verbose >= 1) {
-					print "Did not find uid for $search, not adding to group\n";
-				}
+				printf "WARNING: Could not determine PTS name for %s, not adding to group %s\n", $member, $group;
 			}
 		}
 		return @members;
@@ -454,18 +447,18 @@ sub ldap_group_expand {
 
 # accepts: username
 # returns: translated pts username
-sub translate_username {
+sub pts_translate_username {
 	my ($username) = @_;
 	
-	if ($verbose >= 1) {
-		print "Translating username %s\n", $username;
+	if ($debug) {
+		print "translate_username(): Translating username %s", $username;
 	}
 	
 	$username =~ s/^host\/(.+?).bx.psu.edu/rcmd.$1/;
 	$username =~ s/\//./g;
 	
-	if ($verbose >= 1) {
-		print "..translated username to %s\n", $username;
+	if ($debug) {
+		print " ..translated username to %s\n", $username;
 	}
 
 	return $username;
@@ -475,8 +468,8 @@ sub execute {
 	my ($command) = @_;
 	my (@output, $exit);
 
-	if ($verbose >= 3)	{
-		printf "Executing: %s\n", $command;
+	if ($debug) {
+		printf "execute(): %s\n", $command;
 		@output = `$command`;
 		$exit = $?;
 		foreach (@output) {
@@ -486,19 +479,28 @@ sub execute {
 		@output = `$command`;
 		$exit = $?
 	}
-	if ($exit != 0) {
+	if ($exit != 0 ) {
 		printf "ERROR: Command \"%s\" returned %s\n", $command, $exit;
 	}
 	return @output;
 }
 
+sub pexecute {
+	my ($command) = @_;
+
+	if (!$pretend) {
+		execute($command);
+	} else {
+		printf "PRETEND: %s\n", $command;
+	}
+}
 
 ##
 ## Synchronize Users en masse
 ##
 sub bulk_sync_users {
-	if ($verbose >= 1) {
-		print "Synchronizing all groups\n\n";
+	if ($verbose) {
+		print "= Synchronizing all users =\n\n";
 	}
 
 	%ldap_users = ldap_get_users();
@@ -513,7 +515,7 @@ sub bulk_sync_users {
 
 	# translate ldap usernames to pts usernames
 	foreach $ldap_uidnumber (keys %ldap_users) {
-		$ldap_users{$ldap_uidnumber} = translate_username($ldap_users{$ldap_uidnumber});
+		$ldap_users{$ldap_uidnumber} = pts_translate_username($ldap_users{$ldap_uidnumber});
 	}
 
 	# rename users with same IDs and create users that don't exist
@@ -542,13 +544,16 @@ sub bulk_sync_users {
 			}
 		}
 	}
-	$pretend = 0;
 }
 
 ##
 ## Synchronize Groups en masse
 ##
 sub bulk_sync_groups {
+	if ($verbose) {
+		print "= Synchronizing all groups =\n\n";
+	}
+	# we get these each time
 	%ldap_groups = ldap_get_groups();
 	%pts_groups = pts_get_groups();
 	%pts_users = pts_get_users(); # get new list of users
