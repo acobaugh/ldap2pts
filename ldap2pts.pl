@@ -25,7 +25,7 @@ if (defined $opt{'config'} and $opt{'config'} ne '') {
 		-ConfigFile => $opt{'opt'}
 	);
 } else {
-	print "ERROR: Must specify --config <file> !\n";
+	print "ERROR: Must specify --config <file>\n";
 	exit 1;
 }
 
@@ -57,6 +57,15 @@ if (defined $c{'pts'}) {
 }
 my $PTS_OPTIONS = $c{'pts_options'};
 
+# connect to ldap
+if ($verbose >= 1) {
+	printf "Connecting to LDAP server %s\n", $c{'ldap'}{'server'};
+}
+my $ldap = Net::LDAP->new($c{'ldap'}{'server'}) or die "$@";
+$ldap->bind;
+
+
+$ldap->unbind();
 
 ##
 ## PTS Functions
@@ -280,15 +289,6 @@ sub ldap_user_ignore {
 	return 0;
 }
 
-# accepts: nothing
-# returns: Net::LDAP object
-sub ldap_connect {
-	if ($verbose >= 1) {
-		printf "Connecting to LDAP server %s\n", $ldap_server;
-	}
-	$ldap = Net::LDAP->new($c{'ldap'}{'server'}) or die "$@";
-	$ldap->bind;
-}
 
 # accepts: uid or uidnumber
 # returns: uidnumber or 0
@@ -624,5 +624,7 @@ sub bulk_sync_groups {
 	}
 }
 
+##
+## main
+##
 
-$ldap->unbind();
