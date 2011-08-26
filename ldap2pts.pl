@@ -165,7 +165,7 @@ sub pts_get_groups {
 	if ($verbose) {
 		print "Getting list of all pts groups\n";
 	}
-	my @output = `$PTS listentries -g 2>/dev/null $PTS_OPTIONS`;
+	my @output = execute("$PTS listentries -g 2>/dev/null $PTS_OPTIONS");
 	if ($? == 0) {
 		my %groups;
 		shift @output;
@@ -176,7 +176,7 @@ sub pts_get_groups {
 		return %groups;
 	} else {
 		# this shouldn't happen
-		print "$PTS listentries returned 0 entries\n";
+		die "$PTS returned $?. Perhaps you don't have permission?";
 	}
 }
 
@@ -185,8 +185,8 @@ sub pts_get_groups {
 sub pts_ignore {
 	my ($match) = @_;
 	if ($match =~ '^system:.+') {
-		if ($verbose >= 1) {
-			printf "Ignoring PTS entry: %s\n", $match;
+		if ($debug) {
+			printf "pts_ignore(): Ignoring PTS entry: %s\n", $match;
 		}
 		return 1;
 	} else {
@@ -227,13 +227,13 @@ sub pts_removeuser {
 # accepts: group and id 
 # returns: nothing
 sub pts_creategroup {
-	my ($name, $id) = @_;
+	my ($name, $id, $owner) = @_;
 	if ($id !~ s/^-.+//) {
 		$id = "-$id";
 	}
 	printf "Creating PTS group named %s with id %s\n", $name, $id;
 
-	pexecute("$PTS creategroup -name $name -id $id $PTS_OPTIONS");
+	pexecute("$PTS creategroup -name $name -id $id -owner $owner $PTS_OPTIONS");
 }
 
 # accepts: name OR id to delete
@@ -362,7 +362,7 @@ sub ldap_get_users {
 }
 
 # accepts: nothing
-# returns: hash of users keyed by uidnumber
+# returns: hash of users keyed by gidnumber
 sub ldap_get_groups {
 	my ($search) = @_;
 	my ($mesg, $cn, $gidnumber);
@@ -397,7 +397,7 @@ sub ldap_get_groups {
 }
 
 # accepts: cn or gidnumber
-# returns: array of members (memberUid) or 0
+# returns: array of members from attribute $c{'ldap'}{'attr'}{'member'} or 0
 sub ldap_group_expand {
 	my ($group) = @_;
 	my $mesg;
@@ -407,9 +407,9 @@ sub ldap_group_expand {
 	}
 
 	$mesg = $ldap->search(
-		base => $c{'ldap'}{'base'},
+		base => $c{'ldap'}{'group_base'},
 		filter => "(&(objectClass=bxAFSGroup)(|(cn=$group)(bxAFSGroupId=$group)))",
-		attrs => [ 'member' ]
+		attrs => [ $c{'ldap'}{'attr'}{'member'} ]
 	);
 	
 	$mesg->code && die $mesg->error;
@@ -421,25 +421,62 @@ sub ldap_group_expand {
 #		return 0;
 #	}
 
-## Use this block if using member, where member contains a DN
 	my @members;
 	if ($mesg->count() != 0) {
-		foreach my $member ($mesg->entry(0)->get_value('member')) {
-			$mesg = $ldap->search(
-				base => "$member",
-				filter => "(objectClass=*)",
-				attrs => [ 'uid' ]
-			);
-		
-			#$mesg->code && die $mesg->error;
+		foreach my $member ($mesg->entry(0)->get_value($c{'ldap'}{'attr'}{'group_member'})) {
+			# if group_member_is dn, DN is a special case, where it becomes the search base
+			if ($c{'ldap'}{'member_is'} == 'dn') {
+				# look up user_name by DN
+				$mesg = $ldap->search(
+					base => $member,
+					filter => "(objectClass=$c{'ldap'}{'attr'}{'user_class'})",
+					attrs => [ $c{'ldap'}{'attr'}{'user_name'} ]
+				);
+				$mesg->code && die $mesg->error;
 
-			if ($mesg->count() != 0) {
-				push @members, pts_translate_username($mesg->entry(0)->get_value('uid'));
 			} else {
-				printf "WARNING: Could not determine PTS name for %s, not adding to group %s\n", $member, $group;
+				# lookup user name by attr
+				$mesg = $ldap->search(
+					base => $c{'ldap'}{'user_base'},
+					filter => "(&($c{'ldap'}{'member_is'}=$member)(objectClass=$c{'ldap'}{'attr'}{'user_class'}))",
+					attrs => [ $c{'ldap'}{'attr'}{'user_name'} ]
+				);
+				$mesg->code && die $mesg->error;
+
+			}
+			if ($mesg->count() != 0) {
+				my $member2 = $mesg->entry(0)->get_value($c{'ldap'}{'attr'}{'user_name'});
+				push @members, pts_translate_username($member2);
+			} else {
+				printf "WARNING: Could not determine PTS name for %s = %s, not adding to group %s\n", 
+					$c{'ldap'}{'attr'}{'group_member'}, $member, $group;
 			}
 		}
 		return @members;
+	} else {
+		return 0;
+	}
+}
+
+sub ldap_group_owner {
+	my ($group) = @_;
+	my $mesg;
+	
+	if ($debug) {
+		printf "ldap_group_owner(): looking for owner of LDAP group %s\n", $group;
+	}
+
+	$mesg = $ldap->search(
+		base => $c{'ldap'}{'base'},
+		filter => "(&(objectClass=$c{'ldap'}{'attr'}{'group_class'})(|(cn=$group)(bxAFSGroupId=$group)))",
+		attrs => [ $c{'ldap'}{'attr'}{'owner'} ]
+	);
+	
+	$mesg->code && die $mesg->error;
+
+	my @members;
+	if ($mesg->count() != 0) {
+		return $mesg->entry(0)->get_value($c{'ldap'}{'attr'}{'owner'});
 	} else {
 		return 0;
 	}
@@ -451,14 +488,14 @@ sub pts_translate_username {
 	my ($username) = @_;
 	
 	if ($debug) {
-		print "translate_username(): Translating username %s", $username;
+		printf "translate_username(): Translating username %s", $username;
 	}
 	
 	$username =~ s/^host\/(.+?).bx.psu.edu/rcmd.$1/;
 	$username =~ s/\//./g;
 	
 	if ($debug) {
-		print " ..translated username to %s\n", $username;
+		printf " ... %s\n", $username;
 	}
 
 	return $username;
@@ -558,20 +595,20 @@ sub bulk_sync_groups {
 	%pts_groups = pts_get_groups();
 	%pts_users = pts_get_users(); # get new list of users
 
-# transform hash of users so it's keyed by name instead of id
+	# transform hash of users so it's keyed by name instead of id
 	foreach $pts_user_id (keys %pts_users) {
 		$pts_user_name = $pts_users{$pts_user_id};
 		$pts_users_by_name{$pts_user_name} = $pts_user_id;
 	}
 
-# remove groups from %ldap_groups if there is a corresponding username in %pts_users_by_name
+	# remove groups from %ldap_groups if there is a corresponding username in %pts_users_by_name
 	foreach $test_group_id (keys %ldap_groups) {
 			if ( defined $pts_users_by_name{$ldap_groups{$test_group_id}} ) {
 				delete( $ldap_groups{$test_group_id} );
 			}
 	}
 
-# rename groups with same IDs and create groups that don't exist
+	# rename groups with same IDs and create groups that don't exist
 	foreach $ldap_gidnumber (keys %ldap_groups) {
 		if ( defined $pts_groups{$ldap_gidnumber} ) {
 			if ($pts_groups{$ldap_gidnumber} ne $ldap_groups{$ldap_gidnumber}) {
@@ -609,7 +646,11 @@ sub bulk_sync_groups {
 				pts_removeuser($pts_groups{$ldap_gidnumber}, $_);
 			}
 		} else {
-			pts_creategroup($ldap_groups{$ldap_gidnumber}, $ldap_gidnumber);
+			my $owner = ldap_group_owner($ldap_gidnumber);
+			if ($owner eq '') {
+				$owner = $c{'default_group_owner'};
+			}
+			pts_creategroup($ldap_groups{$ldap_gidnumber}, $ldap_gidnumber, ldap_group_owner($ldap_gidnumber));
 			foreach (ldap_group_expand($ldap_groups{$ldap_gidnumber})) {
 					pts_adduser($ldap_groups{$ldap_gidnumber}, $_);
 			}
@@ -625,8 +666,3 @@ sub bulk_sync_groups {
 		}
 	}
 }
-
-##
-## main
-##
-
