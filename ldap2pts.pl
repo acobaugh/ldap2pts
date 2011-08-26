@@ -211,7 +211,7 @@ sub pts_adduser {
 		printf "Adding user %s to group %s\n", $user, $group;
 		pexecute("$PTS adduser -user $user -group $group $PTS_OPTIONS");
 	} elsif ($verbose) {
-		printf "WARNING: User %s does not exist in PTS, so not adding to group %s", $user, $group;
+		printf "WARNING: User %s does not exist in PTS, so not adding to group %s\n", $user, $group;
 	}
 }
 
