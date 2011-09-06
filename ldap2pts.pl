@@ -64,8 +64,18 @@ if ($verbose) {
 my $ldap = Net::LDAP->new($c{'ldap'}{'server'}) or die "$@";
 $ldap->bind;
 
+# initialize this at the start 
+%ldap_users = ldap_get_users();
+%ldap_groups = ldap_get_groups();
+%pts_users = pts_get_users();
+%pts_groups = pts_get_groups();
+
 # sync
 bulk_sync_users();
+
+# this might have changed, do it again
+%ldap_users = ldap_get_users();
+
 bulk_sync_groups();
 
 # unbind
@@ -232,11 +242,10 @@ sub pts_creategroup {
 		$id = "-$id";
 	}
 
-	if (!defined $owner) {
-		$owner = 0;
-	} else {
+	if (!defined $owner or $owner eq '') {
 		$owner = $c{'pts'}{'default_group_owner'};
-		printf "default_group_owner = $c{'pts'}{'default_group_owner'}\n";
+	} else {
+		$owner = $owner;
 	}
 
 	printf "Creating PTS group named %s with id %s and owner %s\n", $name, $id, $owner;
@@ -433,7 +442,12 @@ sub ldap_group_expand {
 					filter => "(objectClass=$c{'ldap'}{'attr'}{'user_class'})",
 					attrs => [ $c{'ldap'}{'attr'}{'user_name'} ]
 				);
-				$mesg->code && die $mesg->error . " $member";
+				if ($mesg->code == 32) {
+					printf "WARNING: dn: %s does not exist!\n", $member;
+					next;
+				} else {
+					$mesg->code && die $mesg->error . " $member";
+				}
 
 			} else {
 				# lookup user name by attr
@@ -442,7 +456,12 @@ sub ldap_group_expand {
 					filter => "(&($c{'ldap'}{'member_is'}=$member)(objectClass=$c{'ldap'}{'attr'}{'user_class'}))",
 					attrs => [ $c{'ldap'}{'attr'}{'user_name'} ]
 				);
-				$mesg->code && die $mesg->error;
+				if ($mesg->code == 32) {
+					printf "WARNING: %s = %s does not exist!\n", $c{'ldap'}{'attr'}{'user_name'}, $member;
+					next;
+				} else {
+					$mesg->code && die $mesg->error;
+				}
 
 			}
 			if ($mesg->count() != 0) {
@@ -545,9 +564,6 @@ sub bulk_sync_users {
 		print "= Synchronizing all users =\n\n";
 	}
 
-	%ldap_users = ldap_get_users();
-	%pts_users = pts_get_users();
-	%pts_groups = pts_get_groups();
 
 	# convert %pts_groups to be keyed by name instead of id
 	foreach $pts_group_id (keys %pts_groups) {
@@ -595,11 +611,7 @@ sub bulk_sync_groups {
 	if ($verbose) {
 		print "= Synchronizing all groups =\n\n";
 	}
-	# we get these each time
-	%ldap_groups = ldap_get_groups();
-	%pts_groups = pts_get_groups();
-	%pts_users = pts_get_users(); # get new list of users
-
+	
 	# transform hash of users so it's keyed by name instead of id
 	foreach $pts_user_id (keys %pts_users) {
 		$pts_user_name = $pts_users{$pts_user_id};
@@ -651,8 +663,7 @@ sub bulk_sync_groups {
 				pts_removeuser($pts_groups{$ldap_gidnumber}, $_);
 			}
 		} else {
-			my $owner = ldap_group_owner($ldap_gidnumber);
-			pts_creategroup($ldap_groups{$ldap_gidnumber}, $ldap_gidnumber, $owner);
+			pts_creategroup($ldap_groups{$ldap_gidnumber}, $ldap_gidnumber, ldap_group_owner($ldap_gidnumber));
 			foreach (ldap_group_expand($ldap_groups{$ldap_gidnumber})) {
 					pts_adduser($ldap_groups{$ldap_gidnumber}, $_);
 			}
