@@ -150,7 +150,7 @@ sub pts_get_users {
 		}
 		
 		if ($debug) {
-			printf "pts_get_users(): found %n users\n", keys(%users);
+			printf "pts_get_users(): found %n users\n", scalar keys(%users);
 		}
 
 		return %users;
@@ -231,7 +231,15 @@ sub pts_creategroup {
 	if ($id !~ s/^-.+//) {
 		$id = "-$id";
 	}
-	printf "Creating PTS group named %s with id %s\n", $name, $id;
+
+	if (!defined $owner) {
+		$owner = 0;
+	} else {
+		$owner = $c{'pts'}{'default_group_owner'};
+		printf "default_group_owner = $c{'pts'}{'default_group_owner'}\n";
+	}
+
+	printf "Creating PTS group named %s with id %s and owner %s\n", $name, $id, $owner;
 
 	pexecute("$PTS creategroup -name $name -id $id -owner $owner $PTS_OPTIONS");
 }
@@ -409,30 +417,23 @@ sub ldap_group_expand {
 	$mesg = $ldap->search(
 		base => $c{'ldap'}{'group_base'},
 		filter => "(&(objectClass=bxAFSGroup)(|(cn=$group)(bxAFSGroupId=$group)))",
-		attrs => [ $c{'ldap'}{'attr'}{'member'} ]
+		attrs => [ $c{'ldap'}{'attr'}{'group_member'} ]
 	);
-	
-	$mesg->code && die $mesg->error;
 
-## Use this block if using memberUid	
-#	if ($mesg->count() != 0) {
-#		return $mesg->entry(0)->get_value('member');
-#	} else {
-#		return 0;
-#	}
+	$mesg->code && die $mesg->error;
 
 	my @members;
 	if ($mesg->count() != 0) {
 		foreach my $member ($mesg->entry(0)->get_value($c{'ldap'}{'attr'}{'group_member'})) {
 			# if group_member_is dn, DN is a special case, where it becomes the search base
-			if ($c{'ldap'}{'member_is'} == 'dn') {
+			if ($c{'ldap'}{'member_is'} eq 'dn') {
 				# look up user_name by DN
 				$mesg = $ldap->search(
 					base => $member,
 					filter => "(objectClass=$c{'ldap'}{'attr'}{'user_class'})",
 					attrs => [ $c{'ldap'}{'attr'}{'user_name'} ]
 				);
-				$mesg->code && die $mesg->error;
+				$mesg->code && die $mesg->error . " $member";
 
 			} else {
 				# lookup user name by attr
@@ -462,21 +463,25 @@ sub ldap_group_owner {
 	my ($group) = @_;
 	my $mesg;
 	
-	if ($debug) {
+	if (!$debug) {
 		printf "ldap_group_owner(): looking for owner of LDAP group %s\n", $group;
 	}
 
 	$mesg = $ldap->search(
 		base => $c{'ldap'}{'base'},
 		filter => "(&(objectClass=$c{'ldap'}{'attr'}{'group_class'})(|(cn=$group)(bxAFSGroupId=$group)))",
-		attrs => [ $c{'ldap'}{'attr'}{'owner'} ]
+		attrs => [ $c{'ldap'}{'attr'}{'group_owner'} ]
 	);
-	
+
 	$mesg->code && die $mesg->error;
 
-	my @members;
 	if ($mesg->count() != 0) {
-		return $mesg->entry(0)->get_value($c{'ldap'}{'attr'}{'owner'});
+		my $owner = $mesg->entry(0)->get_value($c{'ldap'}{'attr'}{'group_owner'});
+		if ($owner ne '') { 
+			return $owner;
+		} else {
+			return 0;
+		}
 	} else {
 		return 0;
 	}
@@ -647,10 +652,7 @@ sub bulk_sync_groups {
 			}
 		} else {
 			my $owner = ldap_group_owner($ldap_gidnumber);
-			if ($owner eq '') {
-				$owner = $c{'default_group_owner'};
-			}
-			pts_creategroup($ldap_groups{$ldap_gidnumber}, $ldap_gidnumber, ldap_group_owner($ldap_gidnumber));
+			pts_creategroup($ldap_groups{$ldap_gidnumber}, $ldap_gidnumber, $owner);
 			foreach (ldap_group_expand($ldap_groups{$ldap_gidnumber})) {
 					pts_adduser($ldap_groups{$ldap_gidnumber}, $_);
 			}
