@@ -280,12 +280,7 @@ sub pts_createuser {
 sub ldap_user_ignore {
 	my ($u) = @_;
 
-	if ($u 
-			eq 'K/M'
-			or $u =~ 'afs/.+'
-			or $u =~ 'kadmin/.+'
-			or $u =~ 'krbtgt/.+'
-	) { 
+	if ($u =~ $c{'ldap'}{'ignore'}) {
 		if ($verbose >= 1) {
 			printf "Ignoring LDAP user with uid %s\n", $u;
 		}
@@ -434,42 +429,44 @@ sub ldap_group_expand {
 	my @members;
 	if ($mesg->count() != 0) {
 		foreach my $member ($mesg->entry(0)->get_value($c{'ldap'}{'attr'}{'group_member'})) {
-			# if group_member_is dn, DN is a special case, where it becomes the search base
-			if ($c{'ldap'}{'member_is'} eq 'dn') {
-				# look up user_name by DN
-				$mesg = $ldap->search(
-					base => $member,
-					filter => "(objectClass=$c{'ldap'}{'attr'}{'user_class'})",
-					attrs => [ $c{'ldap'}{'attr'}{'user_name'} ]
-				);
-				if ($mesg->code == 32) {
-					printf "WARNING: dn: %s does not exist!\n", $member;
-					next;
-				} else {
-					$mesg->code && die $mesg->error . " $member";
-				}
+			if (!ldap_user_ignore($member)) {
+				# if group_member_is dn, DN is a special case, where it becomes the search base
+				if ($c{'ldap'}{'member_is'} eq 'dn') {
+					# look up user_name by DN
+					$mesg = $ldap->search(
+						base => $member,
+						filter => "(objectClass=$c{'ldap'}{'attr'}{'user_class'})",
+						attrs => [ $c{'ldap'}{'attr'}{'user_name'} ]
+					);
+					if ($mesg->code == 32) {
+						printf "WARNING: dn: %s does not exist!\n", $member;
+						next;
+					} else {
+						$mesg->code && die $mesg->error . " $member";
+					}
 
-			} else {
-				# lookup user name by attr
-				$mesg = $ldap->search(
-					base => $c{'ldap'}{'user_base'},
-					filter => "(&($c{'ldap'}{'member_is'}=$member)(objectClass=$c{'ldap'}{'attr'}{'user_class'}))",
-					attrs => [ $c{'ldap'}{'attr'}{'user_name'} ]
-				);
-				if ($mesg->code == 32) {
-					printf "WARNING: %s = %s does not exist!\n", $c{'ldap'}{'attr'}{'user_name'}, $member;
-					next;
 				} else {
-					$mesg->code && die $mesg->error;
-				}
+					# lookup user name by attr
+					$mesg = $ldap->search(
+						base => $c{'ldap'}{'user_base'},
+						filter => "(&($c{'ldap'}{'member_is'}=$member)(objectClass=$c{'ldap'}{'attr'}{'user_class'}))",
+						attrs => [ $c{'ldap'}{'attr'}{'user_name'} ]
+					);
+					if ($mesg->code == 32) {
+						printf "WARNING: %s = %s does not exist!\n", $c{'ldap'}{'attr'}{'user_name'}, $member;
+						next;
+					} else {
+						$mesg->code && die $mesg->error;
+					}
 
-			}
-			if ($mesg->count() != 0) {
-				my $member2 = $mesg->entry(0)->get_value($c{'ldap'}{'attr'}{'user_name'});
-				push @members, pts_translate_username($member2);
-			} else {
-				printf "WARNING: Could not determine PTS name for %s = %s, not adding to group %s\n", 
-					$c{'ldap'}{'attr'}{'group_member'}, $member, $group;
+				}
+				if ($mesg->count() != 0) {
+					my $member2 = $mesg->entry(0)->get_value($c{'ldap'}{'attr'}{'user_name'});
+					push @members, pts_translate_username($member2);
+				} else {
+					printf "WARNING: Could not determine PTS name for %s = %s, not adding to group %s\n", 
+						$c{'ldap'}{'attr'}{'group_member'}, $member, $group;
+				}
 			}
 		}
 		return @members;
