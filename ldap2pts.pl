@@ -65,16 +65,16 @@ my $ldap = Net::LDAP->new($c{'ldap'}{'server'}) or die "$@";
 $ldap->bind;
 
 # initialize this at the start 
-%ldap_users = ldap_get_users();
-%ldap_groups = ldap_get_groups();
-%pts_users = pts_get_users();
-%pts_groups = pts_get_groups();
+#%ldap_users = ldap_get_users();
+#%ldap_groups = ldap_get_groups();
+#%pts_users = pts_get_users();
+#%pts_groups = pts_get_groups();
 
 # sync
 bulk_sync_users();
 
 # this might have changed, do it again
-%ldap_users = ldap_get_users();
+#%ldap_users = ldap_get_users();
 
 bulk_sync_groups();
 
@@ -146,7 +146,7 @@ sub pts_user_id {
 
 # accepts: nothing
 # returns: hash of users, keyed off id
-sub pts_get_users {
+sub pts_get_users_by_id {
 	if ($verbose) {
 		print "Getting list of all pts users\n";
 	}
@@ -160,7 +160,7 @@ sub pts_get_users {
 		}
 		
 		if ($debug) {
-			printf "pts_get_users(): found %n users\n", scalar keys(%users);
+			printf "pts_get_users(): found %i users\n", scalar keys(%users);
 		}
 
 		return %users;
@@ -340,9 +340,9 @@ sub ldap_gidnumber {
 
 # accepts: nothing
 # returns: array of users keyed by uidnumber
-sub ldap_get_users {
+sub ldap_get_users_by_id {
 	my ($search) = @_;
-	my ($mesg, $uid, $uidnumber);
+	my ($mesg, $name, $id);
 	my %users;
 	
 	if ($verbose) {
@@ -352,20 +352,26 @@ sub ldap_get_users {
 	$mesg = $ldap->search(
 		base => $c{'ldap'}{'base'},
 		filter => "(objectclass=posixAccount)",
-		attrs => [ 'uidNumber', 'uid' ]
+		attrs => [ $c{'ldap'}{'attr'}{'user_id'}, $c{'ldap'}{'attr'}{'user_name'} ]
 	);
 	
 	$mesg->code && die $mesg->error;
 
 	if ($mesg->count() != 0) {
 		for (my $i = 0; $i < $mesg->count(); $i++) {
-			$uid = $mesg->entry($i)->get_value('uid');
-			$uidnumber = $mesg->entry($i)->get_value('uidNumber');
-		
-			$users{$uidnumber} = $uid;
+			$name = $mesg->entry($i)->get_value($c{'ldap'}{'attr'}{'user_name'});
+			$id = $mesg->entry($i)->get_value($c{'ldap'}{'attr'}{'user_id'});
+			if (defined $name and $name ne '') {	
+				$users{$id} = $name;
+			} else {
+				printf "Could not lookup LDAP user_name = %s and user_id = %s for entry %s\n", 
+					$c{'ldap'}{'attr'}{'user_name'}, 
+					$c{'ldap'}{'attr'}{'user_id'},
+					$mesg->entry($i)->dn();
+			}
 		}
 		if ($debug) {
-			printf "ldap_get_users(): found %n users\n", $mesg->count();
+			printf "ldap_get_users(): found %i users\n", $mesg->count();
 		}
 		return %users;
 	} else {
@@ -400,7 +406,7 @@ sub ldap_get_groups {
 			$groups{$gidnumber} = $cn;
 		}
 		if ($debug) {
-			printf "ldap_get_groups(): found %n groups\n", $mesg->count();
+			printf "ldap_get_groups(): found %i groups\n", $mesg->count();
 		}
 		return %groups;
 	} else {
@@ -431,42 +437,6 @@ sub ldap_group_expand {
 		foreach my $member ($mesg->entry(0)->get_value($c{'ldap'}{'attr'}{'group_member'})) {
 			if (!ldap_user_ignore($member)) {
 				# if group_member_is dn, DN is a special case, where it becomes the search base
-				if ($c{'ldap'}{'member_is'} eq 'dn') {
-					# look up user_name by DN
-					$mesg = $ldap->search(
-						base => $member,
-						filter => "(objectClass=$c{'ldap'}{'attr'}{'user_class'})",
-						attrs => [ $c{'ldap'}{'attr'}{'user_name'} ]
-					);
-					if ($mesg->code == 32) {
-						printf "WARNING: dn: %s does not exist!\n", $member;
-						next;
-					} else {
-						$mesg->code && die $mesg->error . " $member";
-					}
-
-				} else {
-					# lookup user name by attr
-					$mesg = $ldap->search(
-						base => $c{'ldap'}{'user_base'},
-						filter => "(&($c{'ldap'}{'member_is'}=$member)(objectClass=$c{'ldap'}{'attr'}{'user_class'}))",
-						attrs => [ $c{'ldap'}{'attr'}{'user_name'} ]
-					);
-					if ($mesg->code == 32) {
-						printf "WARNING: %s = %s does not exist!\n", $c{'ldap'}{'attr'}{'user_name'}, $member;
-						next;
-					} else {
-						$mesg->code && die $mesg->error;
-					}
-
-				}
-				if ($mesg->count() != 0) {
-					my $member2 = $mesg->entry(0)->get_value($c{'ldap'}{'attr'}{'user_name'});
-					push @members, pts_translate_username($member2);
-				} else {
-					printf "WARNING: Could not determine PTS name for %s = %s, not adding to group %s\n", 
-						$c{'ldap'}{'attr'}{'group_member'}, $member, $group;
-				}
 			}
 		}
 		return @members;
@@ -479,7 +449,7 @@ sub ldap_group_owner {
 	my ($group) = @_;
 	my $mesg;
 	
-	if (!$debug) {
+	if ($debug) {
 		printf "ldap_group_owner(): looking for owner of LDAP group %s\n", $group;
 	}
 
@@ -503,16 +473,66 @@ sub ldap_group_owner {
 	}
 }
 
+# accepts: ldap user as used for the owner/member attr
+# returns: pts name, translated
+sub ldap_user_to_pts_user {
+	my ($ldap_username) = @_;
+	
+	my $mesg;
+
+	if ($c{'ldap'}{'member_is'} eq 'dn') {
+		# look up user_name by DN
+		$mesg = $ldap->search(
+			base => $ldap_username,
+			filter => "(objectClass=$c{'ldap'}{'attr'}{'user_class'})",
+			attrs => [ $c{'ldap'}{'attr'}{'user_name'} ]
+		);
+		if ($mesg->code == 32) {
+			printf "WARNING: dn: %s does not exist!\n", $ldap_username;
+			next;
+		} else {
+			$mesg->code && die $mesg->error . " $ldap_username";
+		}
+
+	} else {
+		# lookup user name by attr
+		$mesg = $ldap->search(
+			base => $c{'ldap'}{'user_base'},
+			filter => "(&($c{'ldap'}{'member_is'}=$ldap_username)(objectClass=$c{'ldap'}{'attr'}{'user_class'}))",
+			attrs => [ $c{'ldap'}{'attr'}{'user_name'} ]
+		);
+		if ($mesg->code == 32) {
+			printf "WARNING: %s = %s does not exist!\n", $c{'ldap'}{'attr'}{'user_name'}, $ldap_username;
+			next;
+		} else {
+			$mesg->code && die $mesg->error;
+		}
+
+	}
+	if ($mesg->count() != 0) {
+		my $pts_username = $mesg->entry(0)->get_value($c{'ldap'}{'attr'}{'user_name'});
+		if (defined $pts_username and $pts_username ne '') {
+			return pts_translate_username($ldap_username);
+		} else {
+			return 0;
+		}
+	} else {
+		printf "WARNING: Could not determine PTS name for LDAP user %s = %s in group %s\n", 
+			$ldap_username;
+	}
+}
+
 # accepts: username
 # returns: translated pts username
 sub pts_translate_username {
 	my ($username) = @_;
 	
 	if ($debug) {
-		printf "translate_username(): Translating username %s", $username;
+		printf "pts_translate_username(): Translating username %s", $username;
 	}
-	
-	$username =~ s/^host\/(.+?).bx.psu.edu/rcmd.$1/;
+
+	# these are the afs rules for going from krb5 to afs krb4
+	$username =~ s/^host\/(.+?)\..+/rcmd.$1/;
 	$username =~ s/\//./g;
 	
 	if ($debug) {
@@ -561,40 +581,43 @@ sub bulk_sync_users {
 		print "= Synchronizing all users =\n\n";
 	}
 
+	my %ldap_users_by_id = ldap_get_users_by_id();
+	my %pts_users_by_id = pts_get_users_by_id();
+	my %pts_groups_by_id = ldap_get_groups();
 
 	# convert %pts_groups to be keyed by name instead of id
-	foreach $pts_group_id (keys %pts_groups) {
-		$pts_group_name = $pts_groups{$pts_group_id};
-		$pts_groups_by_name{$pts_group_name} = $pts_group_id;
+	my %pts_groups_by_name = ();
+	foreach my $pts_group_id (keys %pts_groups_by_id) {
+		$pts_groups_by_name{$pts_groups_by_id{$pts_group_id}} = $pts_group_id;
 	}
 
 	# translate ldap usernames to pts usernames
-	foreach $ldap_uidnumber (keys %ldap_users) {
-		$ldap_users{$ldap_uidnumber} = pts_translate_username($ldap_users{$ldap_uidnumber});
+	foreach my $ldap_user_id (keys %ldap_users_by_id) {
+		$ldap_users_by_id{$ldap_user_id} = pts_translate_username($ldap_users_by_id{$ldap_user_id});
 	}
 
 	# rename users with same IDs and create users that don't exist
 	# also, deletes groups with same name so the user can be created
-	foreach $ldap_uidnumber (keys %ldap_users) {
-		if ( defined $pts_users{$ldap_uidnumber} ) {
-			if ($pts_users{$ldap_uidnumber} ne $ldap_users{$ldap_uidnumber}) {
-				pts_rename($pts_users{$ldap_uidnumber}, $ldap_users{$ldap_uidnumber});
+	foreach my $ldap_user_id (keys %ldap_users_by_id) {
+		if ( defined $pts_users_by_id{$ldap_user_id} ) {
+			if ($pts_users_by_id{$ldap_user_id} ne $ldap_users_by_id{$ldap_user_id}) {
+				pts_rename($pts_users_by_id{$ldap_user_id}, $ldap_users_by_id{$ldap_user_id});
 			}
 		} else {
-			if ( defined $pts_groups_by_name{$ldap_users{$ldap_uidnumber}} ) {
+			if ( defined $pts_groups_by_name{$ldap_users_by_id{$ldap_user_id}} ) {
 				if ($verbose >= 1) {
-					printf "Group with same name as user %s already exists, deleting group.\n", $ldap_users{$ldap_uidnumber};
+					printf "Group with same name as user %s already exists, deleting group.\n", $ldap_users_by_id{$ldap_user_id};
 				}
-				pts_delete($ldap_users{$ldap_uidnumber});
+				pts_delete($ldap_users_by_id{$ldap_user_id});
 			}
-			pts_createuser($ldap_users{$ldap_uidnumber}, $ldap_uidnumber);
+			pts_createuser($ldap_users_by_id{$ldap_user_id}, $ldap_user_id);
 		}
 	}
 
 # delete users from pts that no longer exist in ldap
-	foreach $pts_user_id (keys %pts_users) {
-		if ( ! pts_ignore($pts_users{$pts_user_id}) ) {
-			if ( ! defined $ldap_users{$pts_user_id} ) {
+	foreach $pts_user_id (keys %pts_users_by_id) {
+		if ( ! pts_ignore($pts_users_by_id{$pts_user_id}) ) {
+			if ( ! defined $ldap_users_by_id{$pts_user_id} ) {
 					pts_delete($pts_user_id);
 			}
 		}
